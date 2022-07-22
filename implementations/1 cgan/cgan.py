@@ -1,17 +1,12 @@
 import argparse
 import os
 import numpy as np
-import math
-
 import torchvision.transforms as transforms
 from torchvision.utils import save_image
-
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
-
 import torch.nn as nn
-import torch.nn.functional as F
 import torch
 
 os.makedirs("images", exist_ok=True)
@@ -40,6 +35,7 @@ class Generator(nn.Module):
     def __init__(self):
         super(Generator, self).__init__()
 
+        # 对标签生成类似 onehot 的特征
         self.label_emb = nn.Embedding(opt.n_classes, opt.n_classes)
 
         def block(in_feat, out_feat, normalize=True):
@@ -60,6 +56,8 @@ class Generator(nn.Module):
 
     def forward(self, noise, labels):
         # Concatenate label embedding and image to produce input
+        # 将标签的嵌入信息融合噪音作为输入
+        # gen_input=(64,110), nose=(64,100)
         gen_input = torch.cat((self.label_emb(labels), noise), -1)
         img = self.model(gen_input)
         img = img.view(img.size(0), *img_shape)
@@ -86,6 +84,8 @@ class Discriminator(nn.Module):
 
     def forward(self, img, labels):
         # Concatenate label embedding and image to produce input
+        # 同样鉴别器维持着自己的标签特征，融入输入
+        # 注意这里是拉平后 concat
         d_in = torch.cat((img.view(img.size(0), -1), self.label_embedding(labels)), -1)
         validity = self.model(d_in)
         return validity
@@ -123,17 +123,23 @@ optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1,
 optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 
 FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
+# LongTensor 为标签准备
 LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
 
 
 def sample_image(n_row, batches_done):
-    """Saves a grid of generated digits ranging from 0 to n_classes"""
-    # Sample noise
+    """Saves a grid of generated digits ranging from 0 to n_classes
+    如何利用 GAN 生成图片呢
+    """
+    # 采样生成高斯噪音 Sample noise
     z = Variable(FloatTensor(np.random.normal(0, 1, (n_row ** 2, opt.latent_dim))))
     # Get labels ranging from 0 to n_classes for n rows
+    # 生成你想要的标签的图片
     labels = np.array([num for _ in range(n_row) for num in range(n_row)])
     labels = Variable(LongTensor(labels))
+    # 生成
     gen_imgs = generator(z, labels)
+    # 保存模型
     save_image(gen_imgs.data, "images/%d.png" % batches_done, nrow=n_row, normalize=True)
 
 
@@ -162,12 +168,14 @@ for epoch in range(opt.n_epochs):
 
         # Sample noise and labels as generator input
         z = Variable(FloatTensor(np.random.normal(0, 1, (batch_size, opt.latent_dim))))
+        # 随机生成 batch_size 个标签
         gen_labels = Variable(LongTensor(np.random.randint(0, opt.n_classes, batch_size)))
 
-        # Generate a batch of images
+        # Generate a batch of images with random labels
         gen_imgs = generator(z, gen_labels)
 
         # Loss measures generator's ability to fool the discriminator
+        # 生成器的目标就是让融合标签特征后的图片通过鉴别器生成一个真度，要求真度接近 1
         validity = discriminator(gen_imgs, gen_labels)
         g_loss = adversarial_loss(validity, valid)
 

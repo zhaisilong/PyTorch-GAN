@@ -1,18 +1,14 @@
 import argparse
 import os
 import numpy as np
-import math
 import itertools
-
 import torchvision.transforms as transforms
 from torchvision.utils import save_image
-
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
-
 import torch.nn as nn
-import torch.nn.functional as F
+
 import torch
 
 os.makedirs("images/static/", exist_ok=True)
@@ -48,14 +44,17 @@ def weights_init_normal(m):
 
 
 def to_categorical(y, num_columns):
-    """Returns one-hot encoded Variable"""
+    """Returns one-hot encoded Variable
+    """
+    # 先张成 [batch, num_classes]
     y_cat = np.zeros((y.shape[0], num_columns))
+    # 然后在对应的位置上置 1
     y_cat[range(y.shape[0]), y] = 1.0
-
     return Variable(FloatTensor(y_cat))
 
 
 class Generator(nn.Module):
+    # 生成器基于 DCGAN
     def __init__(self):
         super(Generator, self).__init__()
         input_dim = opt.latent_dim + opt.n_classes + opt.code_dim
@@ -77,15 +76,17 @@ class Generator(nn.Module):
             nn.Tanh(),
         )
 
-    def forward(self, noise, labels, code):
-        gen_input = torch.cat((noise, labels, code), -1)
-        out = self.l1(gen_input)
-        out = out.view(out.shape[0], 128, self.init_size, self.init_size)
-        img = self.conv_blocks(out)
+    def forward(self, noise, labels, code):  # (64,62) (64,10) (64,2)
+        # 这里直接拼接所有额外的张量信息
+        gen_input = torch.cat((noise, labels, code), -1)  # (64, 74)
+        out = self.l1(gen_input)  # (64,8192)
+        out = out.view(out.shape[0], 128, self.init_size, self.init_size)  # 64,128,8,8
+        img = self.conv_blocks(out)  # 64,1,32,32
         return img
 
 
 class Discriminator(nn.Module):
+    # 鉴别器也是基于 DCGAN
     def __init__(self):
         super(Discriminator, self).__init__()
 
@@ -109,26 +110,28 @@ class Discriminator(nn.Module):
         # Output layers
         self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 1))
         self.aux_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, opt.n_classes), nn.Softmax())
-        self.latent_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, opt.code_dim))
+        self.latent_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, opt.code_dim))  # 注意这里输出的是浮点，是某种性质
 
     def forward(self, img):
         out = self.conv_blocks(img)
         out = out.view(out.shape[0], -1)
         validity = self.adv_layer(out)
-        label = self.aux_layer(out)
-        latent_code = self.latent_layer(out)
+
+        # 通过模型输出额外的两个预测值
+        label = self.aux_layer(out)  # 拿到标签
+        latent_code = self.latent_layer(out)  # 这里 code_dim 为 2
 
         return validity, label, latent_code
 
 
 # Loss functions
 adversarial_loss = torch.nn.MSELoss()
-categorical_loss = torch.nn.CrossEntropyLoss()
+categorical_loss = torch.nn.CrossEntropyLoss()  # 处理类别信息
 continuous_loss = torch.nn.MSELoss()
 
 # Loss weights
-lambda_cat = 1
-lambda_con = 0.1
+lambda_cat = 1  # 类别权重为 1
+lambda_con = 0.1  # 连续隐藏层的权重为 0.1
 
 # Initialize generator and discriminator
 generator = Generator()
@@ -165,7 +168,7 @@ optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1,
 optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 optimizer_info = torch.optim.Adam(
     itertools.chain(generator.parameters(), discriminator.parameters()), lr=opt.lr, betas=(opt.b1, opt.b2)
-)
+)  # 此优化器可以直接更新两个
 
 FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
@@ -186,12 +189,12 @@ def sample_image(n_row, batches_done):
     save_image(static_sample.data, "images/static/%d.png" % batches_done, nrow=n_row, normalize=True)
 
     # Get varied c1 and c2
-    zeros = np.zeros((n_row ** 2, 1))
-    c_varied = np.repeat(np.linspace(-1, 1, n_row)[:, np.newaxis], n_row, 0)
-    c1 = Variable(FloatTensor(np.concatenate((c_varied, zeros), -1)))
-    c2 = Variable(FloatTensor(np.concatenate((zeros, c_varied), -1)))
-    sample1 = generator(static_z, static_label, c1)
-    sample2 = generator(static_z, static_label, c2)
+    zeros = np.zeros((n_row ** 2, 1))  # 100,1
+    c_varied = np.repeat(np.linspace(-1, 1, n_row)[:, np.newaxis], n_row, 0)  # 100,1
+    c1 = Variable(FloatTensor(np.concatenate((c_varied, zeros), -1)))  # 100,2 全都是 [1,0]
+    c2 = Variable(FloatTensor(np.concatenate((zeros, c_varied), -1)))  # 100,2 全都是 [0,1]
+    sample1 = generator(static_z, static_label, c1)  # 100,1,32,32
+    sample2 = generator(static_z, static_label, c2)  # 100,1,32,32
     save_image(sample1.data, "images/varying_c1/%d.png" % batches_done, nrow=n_row, normalize=True)
     save_image(sample2.data, "images/varying_c2/%d.png" % batches_done, nrow=n_row, normalize=True)
 
@@ -220,6 +223,7 @@ for epoch in range(opt.n_epochs):
         optimizer_G.zero_grad()
 
         # Sample noise and labels as generator input
+        # 随机生成 z， label_input 以及 code_input
         z = Variable(FloatTensor(np.random.normal(0, 1, (batch_size, opt.latent_dim))))
         label_input = to_categorical(np.random.randint(0, opt.n_classes, batch_size), num_columns=opt.n_classes)
         code_input = Variable(FloatTensor(np.random.uniform(-1, 1, (batch_size, opt.code_dim))))
@@ -228,6 +232,7 @@ for epoch in range(opt.n_epochs):
         gen_imgs = generator(z, label_input, code_input)
 
         # Loss measures generator's ability to fool the discriminator
+        # 对于生成器，我们希望 validity 与 valid 的差别小
         validity, _, _ = discriminator(gen_imgs)
         g_loss = adversarial_loss(validity, valid)
 
@@ -257,7 +262,7 @@ for epoch in range(opt.n_epochs):
         # ------------------
         # Information Loss
         # ------------------
-
+        # Information Loss 的计算会同时回传给 D 和 C
         optimizer_info.zero_grad()
 
         # Sample labels
@@ -274,6 +279,9 @@ for epoch in range(opt.n_epochs):
         gen_imgs = generator(z, label_input, code_input)
         _, pred_label, pred_code = discriminator(gen_imgs)
 
+        # 有两个可调节系数
+        # 我指定标签和某个参数，生成的图片要同时满足这两个要求，也就是说
+        # 混乱 + 有序 -> 有序 + 有序
         info_loss = lambda_cat * categorical_loss(pred_label, gt_labels) + lambda_con * continuous_loss(
             pred_code, code_input
         )

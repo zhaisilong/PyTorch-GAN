@@ -1,18 +1,15 @@
+"""wgan + 梯度惩罚
+"""
+
 import argparse
 import os
 import numpy as np
-import math
-import sys
-
 import torchvision.transforms as transforms
 from torchvision.utils import save_image
-
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
-
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.autograd as autograd
 import torch
 
@@ -40,6 +37,7 @@ cuda = True if torch.cuda.is_available() else False
 
 
 class Generator(nn.Module):
+    # 生成器不做改变
     def __init__(self):
         super(Generator, self).__init__()
 
@@ -66,6 +64,7 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
+    # 鉴别器只是简单的去掉 sigmoid
     def __init__(self):
         super(Discriminator, self).__init__()
 
@@ -83,8 +82,9 @@ class Discriminator(nn.Module):
         return validity
 
 
-# Loss weight for gradient penalty
-lambda_gp = 10
+k = 2
+p = 6
+
 
 # Initialize generator and discriminator
 generator = Generator()
@@ -110,33 +110,11 @@ dataloader = torch.utils.data.DataLoader(
 )
 
 # Optimizers
+# 为什么这里用带动量的优化器 Adam，且看下文
 optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
-
-
-def compute_gradient_penalty(D, real_samples, fake_samples):
-    """Calculates the gradient penalty loss for WGAN GP"""
-    # Random weight term for interpolation between real and fake samples
-    alpha = Tensor(np.random.random((real_samples.size(0), 1, 1, 1)))
-    # Get random interpolation between real and fake samples
-    interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(True)
-    d_interpolates = D(interpolates)
-    fake = Variable(Tensor(real_samples.shape[0], 1).fill_(1.0), requires_grad=False)
-    # Get gradient w.r.t. interpolates
-    gradients = autograd.grad(
-        outputs=d_interpolates,
-        inputs=interpolates,
-        grad_outputs=fake,
-        create_graph=True,
-        retain_graph=True,
-        only_inputs=True,
-    )[0]
-    gradients = gradients.view(gradients.size(0), -1)
-    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
-    return gradient_penalty
-
 
 # ----------
 #  Training
@@ -147,7 +125,7 @@ for epoch in range(opt.n_epochs):
     for i, (imgs, _) in enumerate(dataloader):
 
         # Configure input
-        real_imgs = Variable(imgs.type(Tensor))
+        real_imgs = Variable(imgs.type(Tensor), requires_grad=True)
 
         # ---------------------
         #  Train Discriminator
@@ -165,10 +143,24 @@ for epoch in range(opt.n_epochs):
         real_validity = discriminator(real_imgs)
         # Fake images
         fake_validity = discriminator(fake_imgs)
-        # Gradient penalty
-        gradient_penalty = compute_gradient_penalty(discriminator, real_imgs.data, fake_imgs.data)
+
+        # Compute W-div gradient penalty
+        real_grad_out = Variable(Tensor(real_imgs.size(0), 1).fill_(1.0), requires_grad=False)
+        real_grad = autograd.grad(
+            real_validity, real_imgs, real_grad_out, create_graph=True, retain_graph=True, only_inputs=True
+        )[0]
+        real_grad_norm = real_grad.view(real_grad.size(0), -1).pow(2).sum(1) ** (p / 2)
+
+        fake_grad_out = Variable(Tensor(fake_imgs.size(0), 1).fill_(1.0), requires_grad=False)
+        fake_grad = autograd.grad(
+            fake_validity, fake_imgs, fake_grad_out, create_graph=True, retain_graph=True, only_inputs=True
+        )[0]
+        fake_grad_norm = fake_grad.view(fake_grad.size(0), -1).pow(2).sum(1) ** (p / 2)
+
+        div_gp = torch.mean(real_grad_norm + fake_grad_norm) * k / 2
+
         # Adversarial loss
-        d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + lambda_gp * gradient_penalty
+        d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + div_gp
 
         d_loss.backward()
         optimizer_D.step()
