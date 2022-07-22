@@ -10,3 +10,7 @@ implementations/*/images
 implementations/*/saved_models
 
 __pycache__
+
+# IDE
+.vscode/
+.idea/
